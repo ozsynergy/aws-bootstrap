@@ -1,0 +1,104 @@
+- hosts: localhost
+  connection: local
+
+  vars:
+    app_environment: test
+    # network
+    aws_region: ap-southeast-2
+    # application nodes
+    aws_ami: 
+
+  tasks:
+   - name: Create Key
+     ec2_key:
+       name: "application-{{ app_environment }}-key"
+       region: "{{ aws_region }}"
+     register: ec2_key
+
+   - name: Save EC2 Key if needed
+     copy:  content="{{ ec2_key.private_key }}" dest="./application-{{ app_environment }}.pem" mode=0600
+     when: ec2_key.changed
+
+   - name: Configure VPC and subnets
+     ec2_vpc:
+        state: present
+        cidr_block: 10.0.0.0/22
+        resource_tags: { "Environment": "{{ app_environment }}" }
+        region: "{{ aws_region }}"
+        internet_gateway: True
+        subnets:
+          - cidr: 10.0.1.0/24
+            az: ap-southeast-2a
+            resource_tags: { "Environment": "{{ app_environment }}" }
+          - cidr: 10.0.2.0/24
+            az: ap-southeast-2b
+            resource_tags: { "Environment": "{{ app_environment }}" }
+        route_tables:
+          - subnets:
+            - 10.0.1.0/24
+            - 10.0.2.0/24
+            routes:      
+            - dest: 0.0.0.0/0
+              gw: igw
+     register: vpc   
+
+   - name: Configure Security Group for vpc
+     ec2_group:
+        name: public access
+        description: allow public access
+        region: "{{ aws_region }}"
+        vpc_id: "{{ vpc.vpc.id }}"
+
+        rules:
+         # http 
+         - proto: tcp
+           from_port: 80
+           to_port: 80
+           cidr_ip: 0.0.0.0/0
+         # ssh - normally locked down to vpn traffic or trusted ips         
+         - proto: tcp
+           from_port: 22
+           to_port: 22
+           cidr_ip: 0.0.0.0/0
+        
+#   - name: Create an external ELB 
+   - local_action: 
+        module: ec2_elb_lb
+        name: "application-elb"
+        state: present
+        region: "{{ aws_region }}"
+        zones:
+         - ap-southeast-2a
+         - ap-southeast-2b
+        listeners:
+         - protocol: http
+           load_balancer_port: 80
+           instance_port: 80
+        health_check:
+          ping_protocol: http
+          ping_port: 80
+          ping_path: "/index.html"
+          response_timeout: 5
+          interval: 60
+          unhealthy_threshold: 2
+          healthy_threshold: 3
+
+   - name: Create an Auto scaling group launch config 
+     ec2_lc:
+       name: "application asg"
+       image_id: "{{ aws_ami }}"
+       key_name: "application-{{ app_environment }}-key"
+       security_group: "public access"
+
+   - name: Create an Auto scaling group 
+     ec2_asg:
+       desired_capacity: 2
+       load_balancers: "application elb"
+       launch_configuration: "application asg" 
+       max_size: 5
+       min_size: 2
+       name:  "application asg"
+       region: "{{ aws_region }}"
+
+
+
