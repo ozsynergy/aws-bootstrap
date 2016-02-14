@@ -6,7 +6,7 @@
     # network
     aws_region: ap-southeast-2
     # application nodes
-    aws_ami: 
+    aws_ami: ami-84c1e6e7 
 
   tasks:
    - name: Create Key
